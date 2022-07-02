@@ -1,6 +1,7 @@
 import set_python_path
 from typing import Callable, Iterable
 import numpy as np
+import time
 
 from matplotlib import pyplot as plt
 
@@ -20,7 +21,7 @@ def visualize_results(optimization_results: NelderMeadResult, subset_inds, func)
     intermediate_coords = optimization_results.intermediate.coords[subset_inds]
 
     plt.plot(intermediate_losses.T)
-    plt.savefig('loss_convergence_plot.p')
+    plt.savefig('loss_convergence_plot.png')
     plt.close()
 
     def func_wrapper(x):
@@ -43,7 +44,7 @@ def visualize_results(optimization_results: NelderMeadResult, subset_inds, func)
                    origin='lower', cmap='magma_r')
         plt.scatter(intermediate_coords[:, i, 0],
                     intermediate_coords[:, i, 1])
-        plt.savefig(f'scatter_for_iter_{i}.svg')
+        plt.savefig(f'scatter_for_iter_{i}.png')
         plt.close()
 
 def get_random_initial_points(size: Iterable[int], rng: np.random.RandomState,
@@ -53,7 +54,10 @@ def get_random_initial_points(size: Iterable[int], rng: np.random.RandomState,
     assert all(x <= y for x, y in zip(lower_bounds, upper_bounds)), "The lower_bounds should be <= upper_bounds"
 
     output_dim = len(lower_bounds)
-    size = tuple(size)
+    if isinstance(size, Iterable):
+        size = tuple(size)
+    else:
+        size = (size,)
 
     rand_points = rng.uniform(size=size + (output_dim,), low=np.array(lower_bounds), high=np.array(upper_bounds))
 
@@ -61,25 +65,30 @@ def get_random_initial_points(size: Iterable[int], rng: np.random.RandomState,
 
 
 if __name__ == '__main__':
-    SEED: int = ...
+    SEED: int = 198
     INPUT_DIM: int = 2
     MAX_STEPS: int = 50
-    M: int = 80
+    M: int = 100000
 
     func = rastrigin(INPUT_DIM)
     nelder_mead_params: dict = {
         'return_intermediates': True,
+        'perform_shrink': False,
+        'initial_jitter': 0.2,
     }
-    random_init_points_params: dict = ...
 
-    NelderMeadOptimizer(INPUT_DIM, MAX_STEPS, initial_jitter=None, return_intermediates=True, ftol=1e-2, perform_shrink=True)
-    optimizer = NelderMeadOptimizer(**nelder_mead_params)
+    optimizer = NelderMeadOptimizer(INPUT_DIM, MAX_STEPS, **nelder_mead_params)
 
     grng = np.random.RandomState(seed=SEED)
     initial_points = get_random_initial_points(M, grng,
                                                lower_bounds=[func.bounds[0]]*INPUT_DIM,
                                                upper_bounds=[func.bounds[1]]*INPUT_DIM)
 
-    minimize_result: NelderMeadResult = optimizer.minimize(func, initial_points)
+    import ipdb
+    ipdb.set_trace()
+    with ipdb.launch_ipdb_on_exception():
+        start = time.time()
+        minimize_result: NelderMeadResult = optimizer.minimize(func, initial_points)
+        print(f"Completed optimization in {(time.time() - start)}")
 
-    visualize_results(minimize_result)
+    visualize_results(minimize_result, grng.permutation(M)[:60], func)

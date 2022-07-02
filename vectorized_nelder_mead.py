@@ -78,6 +78,7 @@ class NelderMeadOptimizer:
         self.max_steps = max_steps
         self.initial_jitter = initial_jitter
         self.return_intermediates = return_intermediates
+        self.perform_shrink = perform_shrink
 
         if initial_jitter is not None:
             initial_jitter = np.asarray(initial_jitter, dtype=np.float32)
@@ -113,17 +114,17 @@ class NelderMeadOptimizer:
     def _update_state(self, state: _NMAlgorithmState) -> _NMAlgorithmState:
         # sort the fitnesses
         sort_indices = np.argsort(state.loss, axis=1)
-        new_simplex = np.take_along_axis(sort_indices, state.simplex, 1)
-        new_loss = np.take_along_axis(sort_indices, state.loss, 1)
+        new_simplex = np.take_along_axis(state.simplex, np.expand_dims(sort_indices, -1), 1)
+        new_loss = np.take_along_axis(state.loss, sort_indices, 1)
 
-        new_coord_centroid = np.mean(state.simplex[:, :-1])  # (n_nci, dim)
-        new_coord_worst = state.simplex[:, -1]                  # (n_nci, dim)
-        new_coord_best = state.simplex[:, 0]                    # (n_nci, dim)
-        new_coord_secondworst = state.simplex[:, -2]                  # (n_nci, dim)
+        new_coord_centroid = np.mean(new_simplex[:, :-1], axis=1)  # (n_nci, dim)
+        new_coord_worst = new_simplex[:, -1]                  # (n_nci, dim)
+        new_coord_best = new_simplex[:, 0]                    # (n_nci, dim)
+        new_coord_secondworst = new_simplex[:, -2]                  # (n_nci, dim)
 
-        new_loss_worst = state.loss[:, -1]                  # (n_nci,)
-        new_loss_best = state.loss[:, 0]                    # (n_nci,)
-        new_loss_secondworst = state.loss[:, -2]                  # (n_nci,)
+        new_loss_worst = new_loss[:, -1]                  # (n_nci,)
+        new_loss_best = new_loss[:, 0]                    # (n_nci,)
+        new_loss_secondworst = new_loss[:, -2]                  # (n_nci,)
 
         new_state = _NMAlgorithmState(simplex=new_simplex,
                                       loss=new_loss,
@@ -170,12 +171,12 @@ class NelderMeadOptimizer:
         to_outer_contract = to_contract & (state.loss_reflected < state.loss_worst)
         to_inner_contract = state.loss_reflected >= state.loss_worst
 
-        assert np.all((to_inner_contract | to_inner_contract) == to_contract)
+        assert np.all((to_inner_contract | to_outer_contract) == to_contract)
 
         return_masks = (to_reflect, to_expand, to_inner_contract, to_outer_contract)
 
         # check for no common elements
-        assert not any(any(np.any(x == y) for x in return_masks if x is not y) for y in return_masks)
+        assert not any(any(np.any(x & y) for x in return_masks if x is not y) for y in return_masks)
         # check union covers all elements
         assert np.all(np.any(return_masks, axis=0))
 
@@ -245,7 +246,7 @@ class NelderMeadOptimizer:
         delta = 0.5
 
         coord_rest = state.simplex[mask, 1:]  # (nmask, dim (points in simplex), dim)
-        coord_best = state.coord_best[mask].expand_dims(1)  # (nmask, 1, dim)
+        coord_best = np.expand_dims(state.coord_best[mask], 1)  # (nmask, 1, dim)
 
         new_simplex_coords = coord_best + delta*(coord_rest - coord_best)  # (nmask, dim (points in simplex), dim)
         new_simplex_losses = func(new_simplex_coords)  # (nmask, dim (points in simplex))
@@ -283,7 +284,7 @@ class NelderMeadOptimizer:
                 n_steps += non_converged_mask.astype(np.int_)
 
             # calculate reflection and function ()
-            state = self._calculate_reflection(state, non_converged_mask)
+            state = self._calculate_reflection(state, func_wrapper, non_converged_mask)
             to_reflect, to_expand, to_inner_contract, to_outer_contract = self._validate_reflection(state)
 
             expanded_coords, expanded_loss, expanded_success = self._perform_expansion(state, func_wrapper, to_expand & non_converged_mask)
@@ -297,6 +298,7 @@ class NelderMeadOptimizer:
             to_perform_shrink = non_converged_mask & ~(to_reflect | to_expand | outer_contracted_success | inner_contracted_success)
             
             if self.perform_shrink:
+                print(f"performing shrink for {np.count_nonzero(to_perform_shrink)} members")
                 shrunk_simplex_coords, shrunk_simplex_losses = self._perform_shrink(state, func_wrapper, to_perform_shrink)
             else:
                 # all those assigned to shrinking have converged
@@ -305,10 +307,18 @@ class NelderMeadOptimizer:
             # replace worst element of simplex
             # in-place edit is safe due to the simplex being freshly created in _get_initial_state and _update_state
             state.simplex[to_update_with_reflected, -1] = state.coord_reflected[to_update_with_reflected]
-            state.loss[to_update_with_reflected, -1] = state.loss_reflected[to_update_with_reflected]
+            state.simplex[expanded_success, -1] = expanded_coords
+            state.simplex[outer_contracted_success, -1] = outer_contracted_coords
+            state.simplex[inner_contracted_success, -1] = inner_contracted_coords
 
-            state.simplex[to_perform_shrink, 1:] = shrunk_simplex_coords
-            state.loss[to_perform_shrink, 1:] = shrunk_simplex_losses
+            state.loss[to_update_with_reflected, -1] = state.loss_reflected[to_update_with_reflected]
+            state.loss[expanded_success, -1] = expanded_loss
+            state.loss[outer_contracted_success, -1] = outer_contracted_loss
+            state.loss[inner_contracted_success, -1] = inner_contracted_loss
+
+            if self.perform_shrink:
+                state.simplex[to_perform_shrink, 1:] = shrunk_simplex_coords
+                state.loss[to_perform_shrink, 1:] = shrunk_simplex_losses
 
         # Perform final state update
         state = self._update_state(state)
